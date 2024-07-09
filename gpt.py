@@ -6,6 +6,37 @@ from dataclasses import dataclass
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
+import tiktoken
+
+class DataLoaderV1:
+    def __init__(self, B, T):
+        self.B = B
+        self.T = T
+        
+        # Load enron dataset
+        with open('enron_data.txt', 'r') as f:
+            text = f.read()
+        # Encode tokens for gpt2 with tiktoken
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(text)
+        self.tokens = torch.tensor(tokens)
+        print(f"Loaded {len(self.tokens)} tokens...")
+        print(f"Loaded {len(self.tokens)} tokens...")
+        self.current_posn = 0
+        
+    def next_batch(self):
+        B, T = self.B, self.T
+        # Read the next tokens into the buffer
+        # Recall the +1 is to get the last target token
+        buf = self.tokens[self.current_posn : self.current_posn+(B*T+1)]
+        # Take offsets for data and target
+        x = (buf[:-1]).view(B, T)
+        y = (buf[1:]).view(B, T)
+        # Update posn, if it would be out of bounds, reset it 
+        self.current_posn += B * T
+        if self.current_posn + (B * T + 1) > len(self.tokens):
+            self.current_posn = 0
+        return x, y
 
 class CausalSelfAttention(nn.Module):
     # Heads for MultiHead attention are like streams, their output is just concat
@@ -85,6 +116,7 @@ class GPT(nn.Module):
         super().__init__()
         self.config = config
 
+        # Layers have random initialization by default
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd), # Weights of token embeddings
             wpe = nn.Embedding(config.block_size, config.n_embd), # Weights of position embeddings
@@ -97,7 +129,11 @@ class GPT(nn.Module):
 
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False) # LM = language model
         
-    def forward(self, idx):
+        # Share the weights between head and output, because we expect semantically similar words to have similar output probs
+        # This saves us about 40 million params, we can be more efficient when training because of this intuition/bias
+        self.transformer.wte.weight = self.lm_head.weight
+        
+    def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T < self.config.block_size, f"Cannot forward seq of len {T}"
         
@@ -111,7 +147,13 @@ class GPT(nn.Module):
             
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x) # Return a (B, T, vocab_size) tensor
-        return logits
+        
+        loss = None
+        if targets is not None:
+            # View is to flatten tensort to 2ds, B*T x vocab_size
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+        
+        return logits, loss
         
     # FROM https://github.com/karpathy/build-nanogpt/blob/master/train_gpt2.py#L214
     @classmethod
@@ -163,47 +205,56 @@ class GPT(nn.Module):
 
         return model
     
-model = GPT.from_pretrained('gpt2')
+    
+def get_enron_data():
+    with open('enron_data.txt', 'r') as f:
+        text = f.read()
+        data = text[:1000] # First 1000 chars, ~300 tokens
+        enc = tiktoken.get_encoding('gpt2')
+        tokens = enc.encode(data)
+        return tokens
+        
+    
+def print_sample_data():
+    tokens = get_enron_data()
+    print(tokens[:24])
+        
 
-n_seq = 5
-max_len = 30
+def get_data_batch(device):
+    tokens = get_enron_data()
+    B, T = 4, 32
+    buf = torch.tensor(tokens[:B*T + 1])
+    buf = buf.to(device)
+    x = buf[:-1].view(B, T)
+    y = buf[1:].view(B, T)
+    return x, y
+    
+device = "cuda" if torch.cuda.is_available() else "cpu"  
+print("Running training on device " + str(device))  
+model = GPT(GPTConfig())
+model.to(device)
 
-model.eval()
-model.to('cuda')
+# Using batch size 4x32
+loader = DataLoaderV1(B=4, T=32)
 
-# prefix tokens
-import tiktoken
-enc = tiktoken.get_encoding('gpt2')
-tokens = enc.encode("Hello, I'm a language model,")
-tokens = torch.tensor(tokens, dtype=torch.long) # (8,)
-tokens = tokens.unsqueeze(0).repeat(n_seq, 1) # (5, 8)
-x = tokens.to('cuda')
+# print_sample_data()
+# x, y = get_data_batch(device)
+# Note, when we calc and print loss from uninitialized, we expect each vocab to be roughly uniformly likely
+# Taking the vocab size, using -ln(1/50000), we get ~11, which is what we observe
+# logits, loss = model(x, y)
+# print(loss)
 
-# generate! right now x is (B, T) where B = 5, T = 8
-# set the seed to 42
-torch.manual_seed(42)
-torch.cuda.manual_seed(42)
-while x.size(1) < max_len:
-    # forward the model to get the logits
-    with torch.no_grad():
-        logits = model(x) # (B, T, vocab_size)
-        # take the logits at the last position
-        logits = logits[:, -1, :] # (B, vocab_size)
-        # get the probabilities
-        probs = F.softmax(logits, dim=-1)
-        # do top-k sampling of 50 (huggingface pipeline default)
-        # topk_probs here becomes (5, 50), topk_indices is (5, 50)
-        topk_probs, topk_indices = torch.topk(probs, 50, dim=-1)
-        # select a token from the top-k probabilities
-        # note: multinomial does not demand the input to sum to 1
-        ix = torch.multinomial(topk_probs, 1) # (B, 1)
-        # gather the corresponding indices
-        xcol = torch.gather(topk_indices, -1, ix) # (B, 1)
-        # append to the sequence
-        x = torch.cat((x, xcol), dim=1)
-
-# print the generated text
-for i in range(n_seq):
-    tokens = x[i, :max_len].tolist()
-    decoded = enc.decode(tokens)
-    print(">", decoded)
+# Adam and AdamW are alternatives to stoch grad desc
+optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+for i in range(50):
+    # Use our dataloader to get the next batch of data
+    x, y = loader.next_batch()
+    x, y = x.to(device), y.to(device)
+    # Always remember to start with a 0 gradient
+    optimizer.zero_grad()
+    logits, loss = model(x, y)
+    loss.backward()
+    optimizer.step()
+    # Loss is a tensor, item() converts it to a float
+    # The tensor will live on the GPU, item moves the float to the CPU
+    print(f"Step {i}, Loss {loss.item()}")
