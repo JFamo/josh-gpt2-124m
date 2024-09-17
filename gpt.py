@@ -9,12 +9,12 @@ from torch.nn import functional as F
 import tiktoken
 
 class DataLoaderV1:
-    def __init__(self, B, T):
+    def __init__(self, B, T, dataset="shakespeare"):
         self.B = B
         self.T = T
         
         # Load enron dataset
-        with open('enron_data.txt', 'r') as f:
+        with open(self.get_datafile(dataset), 'r') as f:
             text = f.read()
         # Encode tokens for gpt2 with tiktoken
         enc = tiktoken.get_encoding('gpt2')
@@ -23,6 +23,14 @@ class DataLoaderV1:
         print(f"Loaded {len(self.tokens)} tokens...")
         print(f"Loaded {len(self.tokens)} tokens...")
         self.current_posn = 0
+        
+    def get_datafile(self, dataset):
+        if dataset == "shakespeare":
+            return "datasets/tinyshakespeare.txt"
+        elif dataset == "enron":
+            return "datasets/enron_data.txt"
+        else:
+            raise Exception("Invalid Dataset!")
         
     def next_batch(self):
         B, T = self.B, self.T
@@ -133,6 +141,20 @@ class GPT(nn.Module):
         # This saves us about 40 million params, we can be more efficient when training because of this intuition/bias
         self.transformer.wte.weight = self.lm_head.weight
         
+        # Apply does this to every layer
+        self.apply(self._init_weights)
+        
+    def _init_weights(self, module):
+        # As a general rule, std should be 1/sqrt(size of model). This is roughly 0.02 (120 param = 1024)
+        
+        if isinstance(module, nn.Linear):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            # In paper, positional embedding is 0.01. We use 0.02 here
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        
     def forward(self, idx, targets=None):
         B, T = idx.size()
         assert T < self.config.block_size, f"Cannot forward seq of len {T}"
@@ -235,7 +257,7 @@ model = GPT(GPTConfig())
 model.to(device)
 
 # Using batch size 4x32
-loader = DataLoaderV1(B=4, T=32)
+loader = DataLoaderV1(B=4, T=32, dataset="shakespeare")
 
 # print_sample_data()
 # x, y = get_data_batch(device)

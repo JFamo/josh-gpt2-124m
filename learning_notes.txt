@@ -1,0 +1,67 @@
+Some notes from https://jalammar.github.io/illustrated-transformer/
+
+Generally, the transformer is a set of encoders and decoders (6 in GPT-1)
+Each takes an input vector of some size (512), and outputs it to the next
+The input to the first encoder is an embedding
+
+Each encoder has a self-attention layer and a feed-forward NN layer
+During self-attention, we calculate a positional score for the "attention" 
+of each other posn in the input vector based on our current position.
+This consists of query, key, and value. (Have matrix weights, are trained)
+
+Below explanation using vectors instead of matrices:
+
+The "query vector" is the word I'm asking about. When I have "it" as the word in
+a sentence I'm looking at, I use the query vector for the position of "it"
+The "key vector" is for the word we're scoring against. Think "it" compared to "street" and "animal"
+
+When creating a score, we scale down (by sqrt(N)) and normalize via softmax.
+Then we multiply each "value vector" by its score, sum the vectors, and return that
+result for the current position.
+
+The term "multi-headed attention" refers to the fact that we have many attention layers (8 in gpt1)
+which each have their own Q,K,V matrices and are independently calculated. They are all
+initialized randomly (Josh Q: Wouldn't they all end up converging to the same values?)
+
+We have another weight matrix that is used to turn all the concatenated attention heads
+into a single output. This becomes the input to the FF NN
+
+We learn the positional relationships of words (beyond attention) by adding a positional
+encoding into the embedding. This adds some "distance" between spatially distant words
+when we do attention computation.
+
+There is a specific formula for getting positional encoding, and it depends on the 
+embedding dimensionality.
+
+After decoding, we have a linear NN layer that turns the vector into a "logit" vector.
+A logit is a weighted probability of each word in the vocabulary. There is a softmax
+between the logits and the vocab selection.
+
+When the model produces output, we can do "greedy decoding" which is only taking
+the highest probability. We can also do "beam decoding", which takes the top N
+outputs (called the beam size), runs the model for each of the two, and returns
+whichever has the lower loss after trying both.
+
+GPT2 vs GPT1
+
+After gpt1, we started using only encoders/decoders in a large stack
+GPT2 is a stack of decoders; BERT is a stack of encoders
+GPT2 is also auto-regressive, meaning that the sequence upto this point
+becomes the next input. It is a tradeoff, because then we cannot use context
+after a word.
+
+(Recall that a decoder has an "encoder-decoder self-attention block", while an encoder does not)
+We accomplish auto-regression via masked self-attention, where in the self-attention layer
+we mask all future (right) input
+
+GPT2's "top-K" parameter tells it how creative it can be at selecting a word non-greedily.
+(Similar to beam decoding, but not exactly).
+Token embeddings = "wte" is a vocab size x embedding size matrix.
+Positional encodings = "wpe"
+
+Naming
+============
+Query/Key/Value weights = c_attn
+Projection weights = c_proj
+Fully connected NN weights = c_fc
+(Recall each block has its own set of the above)

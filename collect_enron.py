@@ -21,5 +21,5 @@ def aggregate_sent_items(root_folder, output_file):
 
 # Example usage
 root_folder = 'C:/Users/joshu/Downloads/enron_mail_20150507/maildir'
-output_file = './enron_data.txt'
+output_file = './datasets/enron_data.txt'
 aggregate_sent_items(root_folder, output_file)
